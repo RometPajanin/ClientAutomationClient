@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
-import { getAiSettings, getInquiries, getInquiry, submitInquiry, updateAiSettings } from './api'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { getAiSettings, getInquiries, getInquiry, loginAdmin, logoutAdmin, restoreAdminSession, submitInquiry, updateAiSettings } from './api'
 
 const screen = ref('home')
-const adminKey = ref('')
-const loginKey = ref('')
+const adminUser = ref(null)
+const loginUsername = ref('admin')
+const loginPassword = ref('')
 const loginError = ref('')
 const loginBusy = ref(false)
 const inquiries = ref([])
@@ -68,31 +69,32 @@ async function sendInquiry() {
 async function loadInquiries() {
   tableBusy.value = true; tableError.value = ''
   try {
-    const data = await getInquiries(adminKey.value, filter.value)
+    const data = await getInquiries(filter.value)
     inquiries.value = data.items || []
     pagination.value = data.pagination || pagination.value
   } catch (error) { tableError.value = error.message } finally { tableBusy.value = false }
 }
 async function signIn() {
   loginError.value = ''
-  if (!loginKey.value.trim()) { loginError.value = 'Enter your admin API key.'; return }
+  if (!loginUsername.value.trim() || !loginPassword.value) { loginError.value = 'Enter your username and password.'; return }
   loginBusy.value = true
   try {
-    adminKey.value = loginKey.value.trim()
+    const session = await loginAdmin(loginUsername.value.trim(), loginPassword.value)
+    adminUser.value = session.user
     await loadInquiries()
     if (tableError.value) throw new Error(tableError.value)
     screen.value = 'dashboard'
-    loginKey.value = ''
-  } catch (error) { adminKey.value = ''; loginError.value = error.message } finally { loginBusy.value = false }
+    loginPassword.value = ''
+  } catch (error) { adminUser.value = null; loginError.value = error.message } finally { loginBusy.value = false }
 }
 async function openDetail(id) {
   detailBusy.value = true; selected.value = null
-  try { selected.value = await getInquiry(adminKey.value, id) } catch (error) { tableError.value = error.message } finally { detailBusy.value = false }
+  try { selected.value = await getInquiry(id) } catch (error) { tableError.value = error.message } finally { detailBusy.value = false }
 }
 async function openSettings() {
   screen.value = 'settings'; settingMessage.value = ''; settingBusy.value = true
   try {
-    const data = await getAiSettings(adminKey.value)
+    const data = await getAiSettings()
     prompt.value = data.companyPrompt || ''
     promptInfo.value = data
   } catch (error) { settingMessage.value = error.message } finally { settingBusy.value = false }
@@ -101,14 +103,21 @@ async function savePrompt() {
   if (!prompt.value.trim() || prompt.value.length > 5000) { settingMessage.value = 'The prompt must contain 1–5,000 characters.'; return }
   settingBusy.value = true; settingMessage.value = ''
   try {
-    promptInfo.value = await updateAiSettings(adminKey.value, prompt.value.trim())
+    promptInfo.value = await updateAiSettings(prompt.value.trim())
     prompt.value = promptInfo.value.companyPrompt
     settingMessage.value = `Saved as prompt version ${promptInfo.value.version ?? 'new'}.`
   } catch (error) { settingMessage.value = error.message } finally { settingBusy.value = false }
 }
-function logout() { adminKey.value = ''; selected.value = null; screen.value = 'home' }
+async function logout() {
+  try { await logoutAdmin() } catch (_) { /* Local logout still clears UI state. */ }
+  adminUser.value = null; selected.value = null; screen.value = 'home'
+}
+async function restoreSession() {
+  try { adminUser.value = (await restoreAdminSession()).user } catch (_) { adminUser.value = null }
+}
 let typingTimer
 function queueSearch() { clearTimeout(typingTimer); typingTimer = setTimeout(() => { filter.value.page = 1; loadInquiries() }, 300) }
+onMounted(restoreSession)
 onBeforeUnmount(() => clearTimeout(typingTimer))
 </script>
 
@@ -117,7 +126,7 @@ onBeforeUnmount(() => clearTimeout(typingTimer))
     <header class="topbar">
       <button class="brand" @click="screen = 'home'" aria-label="Go to inquiry form"><span class="brand-mark">✦</span><span>SIGNAL<br>STATION</span></button>
       <div class="top-actions">
-        <template v-if="adminKey">
+        <template v-if="adminUser">
           <button class="nav-button" :class="{ active: screen === 'dashboard' }" @click="screen = 'dashboard'; loadInquiries()">INBOX</button>
           <button class="nav-button" :class="{ active: screen === 'settings' }" @click="openSettings">SETTINGS</button>
           <button class="nav-button danger" @click="logout">LOG OUT</button>
@@ -135,6 +144,7 @@ onBeforeUnmount(() => clearTimeout(typingTimer))
       </div>
       <form class="pixel-panel inquiry-form" @submit.prevent="sendInquiry" novalidate>
         <div class="panel-title"><span>NEW INQUIRY</span><small>01 / 01</small></div>
+        <p class="demo-warning" role="note"><strong>DEMO ONLY</strong> Do not enter real names, email addresses, phone numbers, passwords, customer messages, or confidential information. Submitted text may be stored and analysed by an AI service.</p>
         <label>Your name <input v-model="form.name" maxlength="100" autocomplete="name" placeholder="Alex Morgan"></label>
         <p v-if="formTouched && formErrors.name" class="field-error">{{ formErrors.name }}</p>
         <div class="two-fields">
@@ -157,8 +167,9 @@ onBeforeUnmount(() => clearTimeout(typingTimer))
     <section v-else-if="screen === 'login'" class="login-wrap">
       <form class="pixel-panel login-panel" @submit.prevent="signIn">
         <p class="eyebrow">RESTRICTED FREQUENCY</p><h1>Admin<br><span>console.</span></h1>
-        <label>Admin API key <input v-model="loginKey" type="password" autocomplete="current-password" placeholder="Enter x-admin-api-key"></label>
-        <p class="hint">Used for this session only. It is never saved in your browser.</p>
+        <label>Username <input v-model="loginUsername" autocomplete="username" maxlength="100" placeholder="admin"></label>
+        <label>Password <input v-model="loginPassword" type="password" autocomplete="current-password" maxlength="200" placeholder="Enter password"></label>
+        <p class="hint">Demo credentials: <strong>admin</strong> / <strong>demo-admin-password</strong>. Authentication uses a revocable HttpOnly cookie; the password is never stored in browser storage.</p>
         <p v-if="loginError" class="field-error">{{ loginError }}</p>
         <button class="primary-button" :disabled="loginBusy"><span>{{ loginBusy ? 'VERIFYING…' : 'ENTER CONSOLE' }}</span><b>→</b></button>
       </form>
